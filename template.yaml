@@ -1,0 +1,71 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: LexGuard — citizen legal-aid & digital-rights agent (LexHack 2026 MVP)
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 30
+    Environment:
+      Variables:
+        LEXGUARD_LLM_MODE: bedrock
+        LEXGUARD_ENV: aws
+        LEXGUARD_BEDROCK_MODEL: anthropic.claude-3-haiku-20240307
+        LEXGUARD_DYNAMODB_TABLE: !Ref CasesTable
+        LEXGUARD_S3_BUCKET: !Ref DocsBucket
+        LEXGUARD_SNS_TOPIC: !Ref NotifyTopic
+
+Resources:
+  LexGuardApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: prod
+      # WhatsApp Business Cloud API webhook posts inbound citizen messages here
+
+  IntakeFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: lexguard.aws.lambda_handler.handle
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref CasesTable }
+        - S3CrudPolicy: { BucketName: !Ref DocsBucket }
+        - SNSPublishMessagePolicy: { TopicName: !GetAtt NotifyTopic.TopicName }
+        - Statement:
+            - Effect: Allow
+              Action: bedrock:InvokeModel
+              Resource: !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.claude-3-haiku-20240307"
+      Events:
+        WhatsAppWebhook:
+          Type: Api
+          Properties:
+            Path: /intake
+            Method: post
+            RestApiId: !Ref LexGuardApi
+
+  CasesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: lexguard-cases
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions: [{ AttributeName: case_id, AttributeType: S }]
+      KeySchema: [{ AttributeName: case_id, KeyType: HASH }]
+
+  DocsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "lexguard-docs-${AWS::AccountId}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+
+  NotifyTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: lexguard-notify
+      # -> Lambda subscriber formats & sends WhatsApp follow-ups via End User Messaging
+
+  # Follow-up scheduler: Step Functions or EventBridge -> cron over open human_review cases
+
+Outputs:
+  ApiUrl: { Value: !Sub "https://${LexGuardApi}.execute-api.${AWS::Region}.amazonaws.com/prod/intake" }
